@@ -6,12 +6,11 @@
 #include <locale.h>             // Для SetConsoleCP 
 #include <time.h>
 #include <ctype.h>
-#include <Windows.h>
 
 #define INVENTORY_SIZE 10
 #define MAX_ITEMS 10
-#define MAX_NAME_LEN 64
-#define MAX_FARMER_NAME 32
+#define MAX_NAME_LEN 32
+#define MAX_FARMER_NAME 64 
 #define MAX_LINE_LEN 256
 
 /* ID предметов */
@@ -390,11 +389,19 @@ void adventure_mode(const char* farmer_name) {
     free_map(&current_map);
     printf("Приключенческий режим завершён. %s вернулся на ферму.\n", farmer_name);
 }
+#ifdef _WIN32
+    #include <windows.h>
+    #define CP_UTF8 65001
+#else
+    #define CP_UTF8 0
+#endif
 
-    int main(void) {
-        SetConsoleOutputCP(65001);
-        SetConsoleCP(65001)
-
+int main(void) {
+        #ifdef _WIN32
+        SetConsoleOutputCP(CP_UTF8);
+        SetConsoleCP(CP_UTF8);
+#endif
+    
     char farmer_name[MAX_FARMER_NAME];
     get_farmer_name(farmer_name);
 
