@@ -3,9 +3,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <locale.h>             // Для SetConsoleCP 
+#include <locale.h>
 #include <time.h>
 #include <ctype.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #define CP_UTF8 65001
+#else
+    #define CP_UTF8 0
+#endif
 
 #define INVENTORY_SIZE 10
 #define MAX_ITEMS 10
@@ -32,7 +39,8 @@
 #define CH_ROCK 'R'
 #define CH_ICE '~'
 #define CH_HERO '@'
-#define CH_CAMP '^'
+#define CH_STAIRS_DOWN 'D'
+#define CH_STAIRS_UP 'U'
 
 const char* default_names[MAX_ITEMS] = {
     "Пусто", "Дерево", "Камень", "Семена", "Железо",
@@ -183,10 +191,12 @@ typedef struct {
     int rows;
     int cols;
     int hero_r, hero_c;
-    int camp_r, camp_c;
+    /* позиции лестниц */
+    int stairs_down_r, stairs_down_c;
+    int stairs_up_r, stairs_up_c;
 } Map;
 
-Map create_map(int rows, int cols) {
+Map create_dungeon_map(int rows, int cols) {
     Map m;
     m.rows = rows;
     m.cols = cols;
@@ -195,7 +205,7 @@ Map create_map(int rows, int cols) {
         m.grid[r] = (char*)malloc(cols * sizeof(char));
     }
 
-    /* Заполнение стен по периметру */
+    /* Периметр — стены */
     for (int c = 0; c < cols; c++) {
         m.grid[0][c] = CH_WALL;
         m.grid[rows - 1][c] = CH_WALL;
@@ -205,15 +215,15 @@ Map create_map(int rows, int cols) {
         m.grid[r][cols - 1] = CH_WALL;
     }
 
-    /* Внутреннее пространство: пол, препятствия, лёд */
+    /* Внутренность: пол, препятствия, лёд */
     for (int r = 1; r < rows - 1; r++) {
         for (int c = 1; c < cols - 1; c++) {
             double rnd = (double)rand() / RAND_MAX;
-            if (rnd < 0.15) {
+            if (rnd < 0.10) {
                 m.grid[r][c] = CH_TREE;
-            } else if (rnd < 0.30) {
+            } else if (rnd < 0.20) {
                 m.grid[r][c] = CH_ROCK;
-            } else if (rnd < 0.45) {
+            } else if (rnd < 0.35) {
                 m.grid[r][c] = CH_ICE;
             } else {
                 m.grid[r][c] = CH_FLOOR;
@@ -221,25 +231,54 @@ Map create_map(int rows, int cols) {
         }
     }
 
-    /* Лагерь (костёр) в случайной свободной клетке */
-    int cr, cc;
+    /* Точка старта: случайная свободная клетка */
+    int sr, sc;
     do {
-        cr = 1 + rand() % (rows - 2);
-        cc = 1 + rand() % (cols - 2);
-    } while (m.grid[cr][cc] == CH_WALL || m.grid[cr][cc] == CH_TREE || m.grid[cr][cc] == CH_ROCK);
-    m.camp_r = cr;
-    m.camp_c = cc;
-    m.grid[cr][cc] = CH_CAMP;
+        sr = 1 + rand() % (rows - 2);
+        sc = 1 + rand() % (cols - 2);
+    } while (m.grid[sr][sc] != CH_FLOOR && m.grid[sr][sc] != CH_ICE);
 
-    /* Герой в случайной свободной клетке (не на лагере) */
+    m.hero_r = sr;
+    m.hero_c = sc;
+
+    /* Лестница вниз D: в любой свободной клетке кроме старта */
+    int dr, dc;
     do {
-        m.hero_r = 1 + rand() % (rows - 2);
-        m.hero_c = 1 + rand() % (cols - 2);
-    } while (m.grid[m.hero_r][m.hero_c] == CH_WALL ||
-             m.grid[m.hero_r][m.hero_c] == CH_TREE ||
-             m.grid[m.hero_r][m.hero_c] == CH_ROCK ||
-             (m.hero_r == cr && m.hero_c == cc));
+        dr = 1 + rand() % (rows - 2);
+        dc = 1 + rand() % (cols - 2);
+    } while ((dr == sr && dc == sc) || m.grid[dr][dc] == CH_WALL || m.grid[dr][dc] == CH_TREE || m.grid[dr][dc] == CH_ROCK);
+    m.stairs_down_r = dr;
+    m.stairs_down_c = dc;
+    m.grid[dr][dc] = CH_STAIRS_DOWN;
 
+    /* Лестница вверх U: рядом со стартом (одна из 4 соседей) */
+    int ur = -1, uc = -1;
+    int candidates[4][2] = {{-1,0},{1,0},{0,-1},{0,1}};
+    int tried = 0;
+    while (tried < 4) {
+        int idx = rand() % 4;
+        ur = sr + candidates[idx][0];
+        uc = sc + candidates[idx][1];
+        if (ur >= 1 && ur <= rows-2 && uc >= 1 && uc <= cols-2) {
+            if (m.grid[ur][uc] != CH_WALL && m.grid[ur][uc] != CH_TREE && m.grid[ur][uc] != CH_ROCK) {
+                break; /* нашли подходящее место */
+            }
+        }
+        tried++;
+    }
+    /* Если не получилось рядом — ставим где-то в свободной клетке */
+    if (ur == -1 || uc == -1) {
+        do {
+            ur = 1 + rand() % (rows - 2);
+            uc = 1 + rand() % (cols - 2);
+        } while ((ur == sr && uc == sc) || (ur == dr && uc == dc) ||
+                 m.grid[ur][uc] == CH_WALL || m.grid[ur][uc] == CH_TREE || m.grid[ur][uc] == CH_ROCK);
+    }
+    m.stairs_up_r = ur;
+    m.stairs_up_c = uc;
+    m.grid[ur][uc] = CH_STAIRS_UP;
+
+    /* Ставим героя */
     m.grid[m.hero_r][m.hero_c] = CH_HERO;
 
     return m;
@@ -264,55 +303,85 @@ void print_map(const Map* m) {
     }
 }
 
-int move_hero(Map* m, int dr, int dc, int* out_slide_steps) {
+/* Возвращает:
+   0 — нельзя пойти
+   1 — обычный успешный ход
+   2 — ход на лестницу вниз (переход на новый этаж)
+   3 — ход на лестницу вверх (выход домой)
+*/
+int move_hero_dungeon(Map* m, int dr, int dc, int* out_slide_steps) {
     *out_slide_steps = 0;
+
     int nr = m->hero_r + dr;
     int nc = m->hero_c + dc;
 
-    /* Проверка границ: если вышли за край — это переход на новую карту */
+    /* Проверка границ: в подземелье выход за край невозможен, это ошибка логики */
     if (nr < 0 || nr >= m->rows || nc < 0 || nc >= m->cols) {
-        return -2; /* специальный код: выход за край -> новая карта */
+        return 0;
     }
 
     char target = m->grid[nr][nc];
+
     if (target == CH_WALL || target == CH_TREE || target == CH_ROCK) {
         return 0; /* нельзя пойти */
     }
 
-    /* Очищаем старую клетку (если там был лагерь — оставляем лагерь) */
-    m->grid[m->hero_r][m->hero_c] = (m->hero_r == m->camp_r && m->hero_c == m->camp_c) ? CH_CAMP : CH_FLOOR;
+    /* Очищаем старую клетку */
+    m->grid[m->hero_r][m->hero_c] = CH_FLOOR; /* в подземелье нет лагеря, просто пол */
 
-    /* Ставим героя на новую клетку */
-    m->hero_r = nr;
-    m->hero_c = nc;
-    m->grid[m->hero_r][m->hero_c] = CH_HERO;
-
+    /* Скольжение по льду */
     int slide_steps = 0;
     if (target == CH_ICE) {
-        /* Скользим в том же направлении, пока не упрёмся или не выйдем на пол */
+        /* Сначала делаем первый шаг на лёд и ставим героя */
+        m->hero_r = nr;
+        m->hero_c = nc;
+        m->grid[m->hero_r][m->hero_c] = CH_HERO;
+        slide_steps++;
+
+        /* Продолжаем скользить в том же направлении */
         while (1) {
             int sr = m->hero_r + dr;
             int sc = m->hero_c + dc;
+
+            /* Если вышли за границы — невозможно, но на всякий случай */
             if (sr < 0 || sr >= m->rows || sc < 0 || sc >= m->cols) {
-                /* Вышли за край во время скольжения — тоже переход на новую карту */
                 *out_slide_steps = slide_steps;
-                return -2;
+                return 0;
             }
+
             char next = m->grid[sr][sc];
             if (next == CH_WALL || next == CH_TREE || next == CH_ROCK) {
-                break; /* врезались */
+                /* Врезались — останавливаемся, герой остаётся на последней клетке перед препятствием */
+                *out_slide_steps = slide_steps;
+                return 1;
             }
-            /* Очищаем текущую клетку */
-            m->grid[m->hero_r][m->hero_c] = (m->hero_r == m->camp_r && m->hero_c == m->camp_c) ? CH_CAMP : CH_FLOOR;
-            /* Двигаем героя */
+
+            /* Двигаем героя вперёд */
+            m->grid[m->hero_r][m->hero_c] = CH_FLOOR;
+            m->hero_r = sr;           
             m->hero_r = sr;
             m->hero_c = sc;
             slide_steps++;
             m->grid[m->hero_r][m->hero_c] = CH_HERO;
-            if (next != CH_ICE) break; /* вышли с льда */
+
+            /* Если следующая клетка — не лёд, значит здесь остановка */
+            if (next != CH_ICE) break;
         }
-        *out_slide_steps = slide_steps;
-        return slide_steps > 0 ? 1 : 1;
+    } else {
+        /* Обычный шаг */
+        m->hero_r = nr;
+        m->hero_c = nc;
+        m->grid[m->hero_r][m->hero_c] = CH_HERO;
+    }
+
+    *out_slide_steps = slide_steps;
+
+    /* Проверяем, где остановился герой */
+    if (m->hero_r == m->stairs_down_r && m->hero_c == m->stairs_down_c) {
+        return 2; /* лестница вниз */
+    }
+    if (m->hero_r == m->stairs_up_r && m->hero_c == m->stairs_up_c) {
+        return 3; /* лестница вверх */
     }
 
     return 1; /* обычный ход */
@@ -320,20 +389,22 @@ int move_hero(Map* m, int dr, int dc, int* out_slide_steps) {
 
 void adventure_mode(const char* farmer_name) {
     srand((unsigned)time(NULL));
-    int distance_from_home = 0;
+    int depth = 0; /* счётчик глубины */
     int running = 1;
 
     Map current_map;
     int map_size = 5 + rand() % 26; /* 5..30 */
-    current_map = create_map(map_size, map_size);
+    current_map = create_dungeon_map(map_size, map_size);
 
-    printf("\n=== ПРИКЛЮЧЕНИЕ: %s отправляется в лес! ===\n", farmer_name);
-    printf("Дальность от дома: %d участков\n", distance_from_home);
-    printf("W - вверх, A - влево, S - вниз, D - вправо, Q - сбежать домой (только из лагеря)\n");
+    printf("\n=== ПОДЗЕМЕЛЬЕ: %s спускается в темноту! ===\n", farmer_name);
+    printf("Глубина: %d этажей\n", depth);
+    printf("W - вверх, A - влево, S - вниз, D - вправо\n");
+    printf("Q - подняться по лестнице U и уйти домой (только стоя на U)\n");
+    printf("Символы: @ - герой, # - стены, T - деревья, R - камни, ~ - лёд, D - лестница вниз, U - лестница вверх\n");
 
     while (running) {
         print_map(&current_map);
-        printf("Дальность от дома: %d | Лагерь: ^ | Герой: @ | Лёд: ~ | Деревья: T | Камни: R\n", distance_from_home);
+        printf("Глубина: %d | Герой: @ | Лёд: ~ | Деревья: T | Камни: R\n", depth);
         printf("Выберите направление (WASDQ): ");
 
         char input[16];
@@ -347,13 +418,13 @@ void adventure_mode(const char* farmer_name) {
             case 'S': dr =  1; break;
             case 'D': dc =  1; break;
             case 'Q':
-                /* Выход домой только если стоим на лагере */
-                if (current_map.hero_r == current_map.camp_r && current_map.hero_c == current_map.camp_c) {
-                    printf("Вы вернулись домой у костра!\n");
+                if (current_map.hero_r == current_map.stairs_up_r &&
+                    current_map.hero_c == current_map.stairs_up_c) {
+                    printf("Вы поднялись по лестнице и вернулись домой!\n");
                     running = 0;
                     break;
                 } else {
-                    printf("Нельзя сбежать домой, пока вы не у лагеря (^).\n");
+                    printf("Нельзя уйти домой, пока вы не на лестнице вверх (U).\n");
                     continue;
                 }
             default:
@@ -364,60 +435,62 @@ void adventure_mode(const char* farmer_name) {
         if (!running) break;
 
         int slide_steps = 0;
-        int result = move_hero(&current_map, dr, dc, &slide_steps);
+        int result = move_hero_dungeon(&current_map, dr, dc, &slide_steps);
 
         if (result == 0) {
-            printf("Нельзя туда пойти — там стена или препятствие.\n");
+            printf("Нельзя туда пойти — там стена или препятствие.\n");
         }
-        else if (result == -2) {
-            /* Выход за край → генерируем новую карту */
-            free_map(&current_map);
-            distance_from_home++;
-            map_size = 5 + rand() % 26; /* новый размер 5..30 */
-            current_map = create_map(map_size, map_size);
-            printf("Вы вышли за пределы участка и попали на новый участок леса! Дальность от дома: %d\n", distance_from_home);
-        }
-        else {
+        else if (result == 1) {
             if (slide_steps > 0) {
-                printf("Скольжение по льду: %d клеток.\n", slide_steps);
+                printf("Скользим по льду: %d клеток!\n", slide_steps);
             }
-            /* обычный успешный ход — ничего дополнительно не выводим, просто цикл продолжается */
+        }
+        else if (result == 2) {
+            /* Спуск на новый этаж */
+            free_map(&current_map);
+            depth++;
+            map_size = 5 + rand() % 26;
+            current_map = create_dungeon_map(map_size, map_size);
+            printf("Вы спустились на новый этаж! Глубина: %d\n", depth);
+            if (slide_steps > 0) {
+                printf("(по льду вы проскользили %d клеток, прежде чем найти лестницу)\n", slide_steps);
+            }
+        }
+        else if (result == 3) {
+            /* Стоим на лестнице вверх — выход домой только через Q */
+            if (slide_steps > 0) {
+                printf("Скользим по льду: %d клеток — и выскочили на лестницу U!\n", slide_steps);
+            }
+            printf("Вы на лестнице вверх (U). Нажмите Q, чтобы подняться домой.\n");
         }
     }
 
-    /* Освобождаем память последней карты */
     free_map(&current_map);
-    printf("Приключенческий режим завершён. %s вернулся на ферму.\n", farmer_name);
+    printf("Приключение завершено. %s вернулся на поверхность. Всего спусков: %d.\n", farmer_name, depth);
 }
-#ifdef _WIN32
-    #include <windows.h>
-    #define CP_UTF8 65001
-#else
-    #define CP_UTF8 0
-#endif
 
 int main(void) {
-        #ifdef _WIN32
-        SetConsoleOutputCP(CP_UTF8);
-        SetConsoleCP(CP_UTF8);
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 #endif
-    
+
     char farmer_name[MAX_FARMER_NAME];
     get_farmer_name(farmer_name);
 
     char item_names[MAX_ITEMS][MAX_NAME_LEN];
     load_item_names(item_names);
-    
-        int current_day = 1;
-        int current_hour = 8;
 
-        int inventory[INVENTORY_SIZE] = {
-            ITEM_EMPTY,  ITEM_WOOD, ITEM_STONE, ITEM_SEEDS,
-            ITEM_IRON,  ITEM_GOLD, ITEM_APPLE, ITEM_POTION,
-            ITEM_ROPE, ITEM_TORCH
-        };
-    
-        int choice = -1;
+    int current_day = 1;
+    int current_hour = 8;
+
+    int inventory[INVENTORY_SIZE] = {
+        ITEM_EMPTY,  ITEM_WOOD, ITEM_STONE, ITEM_SEEDS,
+        ITEM_IRON,  ITEM_GOLD, ITEM_APPLE, ITEM_POTION,
+        ITEM_ROPE, ITEM_TORCH
+    };
+
+    int choice = -1;
     int c;
 
     while (choice != 0) {
@@ -432,7 +505,7 @@ int main(void) {
         printf("[7] Поиск предмета по названию\n");
         printf("[8] Записать состояние в дневник (diary.txt)\n");
         printf("[9] Сгенерировать письмо от старосты (input.txt -> output.txt)\n");
-        printf("[10] Отправиться в приключение\n");
+        printf("[10] Отправиться в подземелье\n");
         printf("Выберите пункт: ");
 
         if (scanf("%d", &choice) != 1) {
@@ -444,7 +517,6 @@ int main(void) {
         while ((c = getchar()) != '\n' && c != EOF) {}
 
         switch (choice) {
-
             case 0:
                 printf("Выход из игры. До свидания, %s!\n", farmer_name);
                 break;
@@ -597,7 +669,6 @@ int main(void) {
 
             case 10:
                 adventure_mode(farmer_name);
-                /* после возвращения из приключения просто продолжаем цикл меню */
                 break;
 
             default:
