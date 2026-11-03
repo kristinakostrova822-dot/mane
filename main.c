@@ -1,8 +1,12 @@
+#define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <locale.h>
+#include <locale.h>             // Для SetConsoleCP 
+#include <time.h>
+#include <ctype.h>
+#include <Windows.h>
 
 #define INVENTORY_SIZE 10
 #define MAX_ITEMS 10
@@ -22,18 +26,18 @@
 #define ITEM_ROPE    8
 #define ITEM_TORCH   9
 
-/* Стандартные названия по умолчанию */
+/* Символы карты */
+#define CH_WALL '#'
+#define CH_FLOOR '.'
+#define CH_TREE 'T'
+#define CH_ROCK 'R'
+#define CH_ICE '~'
+#define CH_HERO '@'
+#define CH_CAMP '^'
+
 const char* default_names[MAX_ITEMS] = {
-    "Пусто",
-    "Дерево",
-    "Камень",
-    "Семена",
-    "Железо",
-    "Золото",
-    "Яблоко",
-    "Зелье",
-    "Верёвка",
-    "Факел"
+    "Пусто", "Дерево", "Камень", "Семена", "Железо",
+    "Золото", "Яблоко", "Зелье", "Верёвка", "Факел"
 };
 
 void get_farmer_name(char* name) {
@@ -114,10 +118,9 @@ void write_diary(const char* farmer_name, int day, int hour,
     fclose(diary);
 }
 
-/* Генерация персонализированного письма от старосты */
 void generate_letter(const char* farmer_name, int current_day,
-                      const int inventory[INVENTORY_SIZE],
-                      const char item_names[MAX_ITEMS][MAX_NAME_LEN])
+                     const int inventory[INVENTORY_SIZE],
+                     const char item_names[MAX_ITEMS][MAX_NAME_LEN])
 {
     FILE* fin = fopen("input.txt", "r");
     if (!fin) {
@@ -136,7 +139,6 @@ void generate_letter(const char* farmer_name, int current_day,
     const char* item_in_slot0 = item_names[inventory[0]];
 
     while (fgets(line, sizeof(line), fin)) {
-        /* Убираем \n для удобной обработки, потом вернём */
         size_t len = strlen(line);
         int has_newline = (len > 0 && line[len - 1] == '\n');
         if (has_newline) {
@@ -144,24 +146,20 @@ void generate_letter(const char* farmer_name, int current_day,
             len--;
         }
 
-        /* Проходим по строке и заменяем теги */
-        char result[MAX_LINE_LEN * 2]; // буфер побольше
+        char result[MAX_LINE_LEN * 2];
         int pos = 0;
 
         for (size_t i = 0; i <= len; i++) {
-            /* Проверка на <NAME> */
             if (i + 6 <= len && strncmp(&line[i], "<NAME>", 6) == 0) {
                 pos += sprintf(&result[pos], "%s", farmer_name);
-                i += 5; // пропускаем 6 символов, цикл добавит +1
+                i += 5;
                 continue;
             }
-            /* Проверка на <DAY> */
             else if (i + 5 <= len && strncmp(&line[i], "<DAY>", 5) == 0) {
                 pos += sprintf(&result[pos], "%d", current_day);
                 i += 4;
                 continue;
             }
-            /* Проверка на <ITEM> */
             else if (i + 6 <= len && strncmp(&line[i], "<ITEM>", 6) == 0) {
                 pos += sprintf(&result[pos], "%s", item_in_slot0);
                 i += 5;
@@ -169,7 +167,7 @@ void generate_letter(const char* farmer_name, int current_day,
             }
 
             result[pos++] = line[i];
-            if (pos >= (int)(sizeof(result) - 1)) break; // защита от переполнения
+            if (pos >= (int)(sizeof(result) - 1)) break;
         }
         result[pos] = '\0';
 
@@ -181,25 +179,238 @@ void generate_letter(const char* farmer_name, int current_day,
     printf("Письмо сгенерировано в output.txt\n");
 }
 
-int main(void) {
-    setlocale(LC_ALL, "");
+typedef struct {
+    char** grid;
+    int rows;
+    int cols;
+    int hero_r, hero_c;
+    int camp_r, camp_c;
+} Map;
+
+Map create_map(int rows, int cols) {
+    Map m;
+    m.rows = rows;
+    m.cols = cols;
+    m.grid = (char**)malloc(rows * sizeof(char*));
+    for (int r = 0; r < rows; r++) {
+        m.grid[r] = (char*)malloc(cols * sizeof(char));
+    }
+
+    /* Заполнение стен по периметру */
+    for (int c = 0; c < cols; c++) {
+        m.grid[0][c] = CH_WALL;
+        m.grid[rows - 1][c] = CH_WALL;
+    }
+    for (int r = 1; r < rows - 1; r++) {
+        m.grid[r][0] = CH_WALL;
+        m.grid[r][cols - 1] = CH_WALL;
+    }
+
+    /* Внутреннее пространство: пол, препятствия, лёд */
+    for (int r = 1; r < rows - 1; r++) {
+        for (int c = 1; c < cols - 1; c++) {
+            double rnd = (double)rand() / RAND_MAX;
+            if (rnd < 0.15) {
+                m.grid[r][c] = CH_TREE;
+            } else if (rnd < 0.30) {
+                m.grid[r][c] = CH_ROCK;
+            } else if (rnd < 0.45) {
+                m.grid[r][c] = CH_ICE;
+            } else {
+                m.grid[r][c] = CH_FLOOR;
+            }
+        }
+    }
+
+    /* Лагерь (костёр) в случайной свободной клетке */
+    int cr, cc;
+    do {
+        cr = 1 + rand() % (rows - 2);
+        cc = 1 + rand() % (cols - 2);
+    } while (m.grid[cr][cc] == CH_WALL || m.grid[cr][cc] == CH_TREE || m.grid[cr][cc] == CH_ROCK);
+    m.camp_r = cr;
+    m.camp_c = cc;
+    m.grid[cr][cc] = CH_CAMP;
+
+    /* Герой в случайной свободной клетке (не на лагере) */
+    do {
+        m.hero_r = 1 + rand() % (rows - 2);
+        m.hero_c = 1 + rand() % (cols - 2);
+    } while (m.grid[m.hero_r][m.hero_c] == CH_WALL ||
+             m.grid[m.hero_r][m.hero_c] == CH_TREE ||
+             m.grid[m.hero_r][m.hero_c] == CH_ROCK ||
+             (m.hero_r == cr && m.hero_c == cc));
+
+    m.grid[m.hero_r][m.hero_c] = CH_HERO;
+
+    return m;
+}
+
+void free_map(Map* m) {
+    if (!m->grid) return;
+    for (int r = 0; r < m->rows; r++) {
+        free(m->grid[r]);
+    }
+    free(m->grid);
+    m->grid = NULL;
+    m->rows = m->cols = 0;
+}
+
+void print_map(const Map* m) {
+    for (int r = 0; r < m->rows; r++) {
+        for (int c = 0; c < m->cols; c++) {
+            putchar(m->grid[r][c]);
+        }
+        putchar('\n');
+    }
+}
+
+int move_hero(Map* m, int dr, int dc, int* out_slide_steps) {
+    *out_slide_steps = 0;
+    int nr = m->hero_r + dr;
+    int nc = m->hero_c + dc;
+
+    /* Проверка границ: если вышли за край — это переход на новую карту */
+    if (nr < 0 || nr >= m->rows || nc < 0 || nc >= m->cols) {
+        return -2; /* специальный код: выход за край -> новая карта */
+    }
+
+    char target = m->grid[nr][nc];
+    if (target == CH_WALL || target == CH_TREE || target == CH_ROCK) {
+        return 0; /* нельзя пойти */
+    }
+
+    /* Очищаем старую клетку (если там был лагерь — оставляем лагерь) */
+    m->grid[m->hero_r][m->hero_c] = (m->hero_r == m->camp_r && m->hero_c == m->camp_c) ? CH_CAMP : CH_FLOOR;
+
+    /* Ставим героя на новую клетку */
+    m->hero_r = nr;
+    m->hero_c = nc;
+    m->grid[m->hero_r][m->hero_c] = CH_HERO;
+
+    int slide_steps = 0;
+    if (target == CH_ICE) {
+        /* Скользим в том же направлении, пока не упрёмся или не выйдем на пол */
+        while (1) {
+            int sr = m->hero_r + dr;
+            int sc = m->hero_c + dc;
+            if (sr < 0 || sr >= m->rows || sc < 0 || sc >= m->cols) {
+                /* Вышли за край во время скольжения — тоже переход на новую карту */
+                *out_slide_steps = slide_steps;
+                return -2;
+            }
+            char next = m->grid[sr][sc];
+            if (next == CH_WALL || next == CH_TREE || next == CH_ROCK) {
+                break; /* врезались */
+            }
+            /* Очищаем текущую клетку */
+            m->grid[m->hero_r][m->hero_c] = (m->hero_r == m->camp_r && m->hero_c == m->camp_c) ? CH_CAMP : CH_FLOOR;
+            /* Двигаем героя */
+            m->hero_r = sr;
+            m->hero_c = sc;
+            slide_steps++;
+            m->grid[m->hero_r][m->hero_c] = CH_HERO;
+            if (next != CH_ICE) break; /* вышли с льда */
+        }
+        *out_slide_steps = slide_steps;
+        return slide_steps > 0 ? 1 : 1;
+    }
+
+    return 1; /* обычный ход */
+}
+
+void adventure_mode(const char* farmer_name) {
+    srand((unsigned)time(NULL));
+    int distance_from_home = 0;
+    int running = 1;
+
+    Map current_map;
+    int map_size = 5 + rand() % 26; /* 5..30 */
+    current_map = create_map(map_size, map_size);
+
+    printf("\n=== ПРИКЛЮЧЕНИЕ: %s отправляется в лес! ===\n", farmer_name);
+    printf("Дальность от дома: %d участков\n", distance_from_home);
+    printf("W - вверх, A - влево, S - вниз, D - вправо, Q - сбежать домой (только из лагеря)\n");
+
+    while (running) {
+        print_map(&current_map);
+        printf("Дальность от дома: %d | Лагерь: ^ | Герой: @ | Лёд: ~ | Деревья: T | Камни: R\n", distance_from_home);
+        printf("Выберите направление (WASDQ): ");
+
+        char input[16];
+        if (!fgets(input, sizeof(input), stdin)) break;
+        char dir = toupper(input[0]);
+
+        int dr = 0, dc = 0;
+        switch (dir) {
+            case 'W': dr = -1; break;
+            case 'A': dc = -1; break;
+            case 'S': dr =  1; break;
+            case 'D': dc =  1; break;
+            case 'Q':
+                /* Выход домой только если стоим на лагере */
+                if (current_map.hero_r == current_map.camp_r && current_map.hero_c == current_map.camp_c) {
+                    printf("Вы вернулись домой у костра!\n");
+                    running = 0;
+                    break;
+                } else {
+                    printf("Нельзя сбежать домой, пока вы не у лагеря (^).\n");
+                    continue;
+                }
+            default:
+                printf("Неверное направление. Используйте W, A, S, D или Q.\n");
+                continue;
+        }
+
+        if (!running) break;
+
+        int slide_steps = 0;
+        int result = move_hero(&current_map, dr, dc, &slide_steps);
+
+        if (result == 0) {
+            printf("Нельзя туда пойти — там стена или препятствие.\n");
+        }
+        else if (result == -2) {
+            /* Выход за край → генерируем новую карту */
+            free_map(&current_map);
+            distance_from_home++;
+            map_size = 5 + rand() % 26; /* новый размер 5..30 */
+            current_map = create_map(map_size, map_size);
+            printf("Вы вышли за пределы участка и попали на новый участок леса! Дальность от дома: %d\n", distance_from_home);
+        }
+        else {
+            if (slide_steps > 0) {
+                printf("Скольжение по льду: %d клеток.\n", slide_steps);
+            }
+            /* обычный успешный ход — ничего дополнительно не выводим, просто цикл продолжается */
+        }
+    }
+
+    /* Освобождаем память последней карты */
+    free_map(&current_map);
+    printf("Приключенческий режим завершён. %s вернулся на ферму.\n", farmer_name);
+}
+
+    int main(void) {
+        SetConsoleOutputCP(65001);
+        SetConsoleCP(65001)
 
     char farmer_name[MAX_FARMER_NAME];
     get_farmer_name(farmer_name);
 
     char item_names[MAX_ITEMS][MAX_NAME_LEN];
     load_item_names(item_names);
+    
+        int current_day = 1;
+        int current_hour = 8;
 
-    int current_day = 1;
-    int current_hour = 8;
-
-    int inventory[INVENTORY_SIZE] = {
-        ITEM_EMPTY,  ITEM_WOOD, ITEM_STONE, ITEM_SEEDS,
-        ITEM_IRON,  ITEM_GOLD, ITEM_APPLE, ITEM_POTION,
-        ITEM_ROPE, ITEM_TORCH
-    };
-
-    int choice = -1;
+        int inventory[INVENTORY_SIZE] = {
+            ITEM_EMPTY,  ITEM_WOOD, ITEM_STONE, ITEM_SEEDS,
+            ITEM_IRON,  ITEM_GOLD, ITEM_APPLE, ITEM_POTION,
+            ITEM_ROPE, ITEM_TORCH
+        };
+    
+        int choice = -1;
     int c;
 
     while (choice != 0) {
@@ -214,6 +425,7 @@ int main(void) {
         printf("[7] Поиск предмета по названию\n");
         printf("[8] Записать состояние в дневник (diary.txt)\n");
         printf("[9] Сгенерировать письмо от старосты (input.txt -> output.txt)\n");
+        printf("[10] Отправиться в приключение\n");
         printf("Выберите пункт: ");
 
         if (scanf("%d", &choice) != 1) {
@@ -374,6 +586,11 @@ int main(void) {
 
             case 9:
                 generate_letter(farmer_name, current_day, inventory, item_names);
+                break;
+
+            case 10:
+                adventure_mode(farmer_name);
+                /* после возвращения из приключения просто продолжаем цикл меню */
                 break;
 
             default:
